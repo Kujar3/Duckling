@@ -1,0 +1,11 @@
+build*/
+third_party/
+tools/pluginval/
+tools/clap-validator/
+out/
+*.user
+.vs/
+build_log.txt
+*.obj
+dist/
+installer/payload/

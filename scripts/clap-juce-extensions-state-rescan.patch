@@ -1,0 +1,18 @@
+diff --git a/src/wrapper/clap-juce-wrapper.cpp b/src/wrapper/clap-juce-wrapper.cpp
+index 8b7ad94..051e86f 100644
+--- a/src/wrapper/clap-juce-wrapper.cpp
++++ b/src/wrapper/clap-juce-wrapper.cpp
+@@ -2467,6 +2467,13 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+         // So we just have to assume it works.
+         processor->setStateInformation(chunkMemory.getData(), (int)chunkMemory.getSize());
+         chunkMemory.reset();
++
++        // Loading a state can change any parameter value; per the CLAP params extension the
++        // plugin then asks the host to re-read all values (not recorded as automation).
++        // [Chordbloom patch: scripts/clap-juce-extensions-state-rescan.patch]
++        if (_host.canUseParams())
++            _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
++
+         return true;
+     }
+ 

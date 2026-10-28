@@ -1,0 +1,37 @@
+DUCKLING - QUICK START
+======================
+
+Duckling is installed. In FL Studio:
+
+1. Options > Manage plugins > "Find installed plugins" (or "Start scan").
+2. Open the Mixer (F9), select the track you want to pump (bass, chords,
+   pads, a whole bus...) and add Duckling to one of its effect slots.
+   Pick the VST3 version.
+
+THE EASY WAY: TEMPO (no routing at all)
+- Leave the trigger on TEMPO, pick a shape and a rate (1/4 = every beat,
+  like a four-on-the-floor kick) and press play. That's it.
+- Depth sets how far the volume dips. 100 % = all the way to silence.
+- "Duck: Lows" ducks only the low end (below the split), so the bass gets
+  out of the kick's way while the top of the sound stays steady.
+
+FOLLOW YOUR REAL KICK: AUDIO
+1. Mixer: select your kick's track, right-click the small arrow under the
+   track that has Duckling and choose "Sidechain to this track".
+2. Duckling's window: click the gear icon (wrapper settings) > Processing
+   tab, and pick the kick's track as the sidechain input.
+3. Play. The panel in the bottom right says "Listening" when the kick
+   arrives. Drag the threshold line just under the kick's peaks.
+
+DRAW YOUR OWN PATTERN: MIDI
+1. Channel rack: (+) > MIDI Out, and set its Port (for example 1).
+2. Duckling's window: gear icon (wrapper settings) > Settings tab, and set
+   the MIDI Input port to the same number.
+3. Draw notes in the MIDI Out channel's pattern. Every note is one duck;
+   the pitch doesn't matter.
+
+In Audio and MIDI mode the rate chooser becomes LENGTH: how long each duck
+lasts before the volume is fully back.
+
+The "?" button in the top-right corner of the plugin shows these steps too.
+Scroll over the big curve to browse the shapes.

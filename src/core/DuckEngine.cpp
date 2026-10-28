@@ -82,6 +82,7 @@ void DuckEngine::prepare (double newSampleRate) noexcept
     releaseCoef = onePoleCoef (sampleRate, kReleaseMs);
     detectorCoef = (float) std::exp (-1.0 / std::max (1.0, sampleRate * kDetectorReleaseMs * 0.001));
     minRetriggerSamples = std::max (1, (int) std::lround (sampleRate * kMinRetriggerMs * 0.001));
+    detectorHoldSamples = std::max (1, (int) std::lround (sampleRate * kDetectorHoldMs * 0.001));
     reset();
 }
 
@@ -92,7 +93,10 @@ void DuckEngine::reset() noexcept
     freeRunPpq = 0.0;
     lastTempoPhase = -1.0;
     envelope = 0.0f;
+    holdCounter = 0;
     armed = true;
+    armFloor = 0.0f;
+    hitPeak = 0.0f;
     samplesSinceTrigger = 1 << 30;
     displayPhase = -1.0f;
 }
@@ -121,6 +125,7 @@ void DuckEngine::process (const DuckSettings& settings, const TransportInfo& tra
         cyclePhase = 2.0;
         lastTempoPhase = -1.0;
         armed = true;
+        armFloor = envelope;
         lastMode = settings.mode;
     }
 
@@ -132,6 +137,8 @@ void DuckEngine::process (const DuckSettings& settings, const TransportInfo& tra
     const float depth = std::clamp (std::isfinite (settings.depth) ? settings.depth : 1.0f, 0.0f, 1.0f);
     const float threshold = dbToGain (std::clamp (settings.thresholdDb, -80.0f, 0.0f));
     const float rearmLevel = threshold * dbToGain (-kRearmHysteresisDb);
+    const float riseFactor = dbToGain (kRetriggerRiseDb);
+    const float dropFactor = dbToGain (-kRearmDropDb);
 
     const bool tempoRunning = settings.mode == TriggerMode::Tempo && (! transport.hasPosition || transport.isPlaying);
     const double startPpq = transport.hasPosition ? (std::isfinite (transport.ppq) ? transport.ppq : 0.0) : freeRunPpq;
@@ -145,7 +152,19 @@ void DuckEngine::process (const DuckSettings& settings, const TransportInfo& tra
 
         // The detector always runs so the meter shows the sidechain in every mode.
         const float in = detector != nullptr ? std::abs (detector[i]) : 0.0f;
-        envelope = (std::isfinite (in) && in > envelope) ? in : envelope * detectorCoef;
+        if (std::isfinite (in) && in >= envelope)
+        {
+            envelope = in;
+            holdCounter = detectorHoldSamples;
+        }
+        else if (holdCounter > 0)
+        {
+            --holdCounter;
+        }
+        else
+        {
+            envelope *= detectorCoef;
+        }
 
         if (samplesSinceTrigger < (1 << 30))
             ++samplesSinceTrigger;
@@ -174,14 +193,28 @@ void DuckEngine::process (const DuckSettings& settings, const TransportInfo& tra
 
             case TriggerMode::Audio:
             {
-                if (armed && envelope >= threshold && samplesSinceTrigger >= minRetriggerSamples)
+                if (armed)
                 {
-                    startCycle();
-                    armed = false;
+                    armFloor = std::min (armFloor, envelope);
+
+                    if (envelope >= threshold && envelope >= armFloor * riseFactor && samplesSinceTrigger >= minRetriggerSamples)
+                    {
+                        startCycle();
+                        armed = false;
+                        hitPeak = envelope;
+                    }
                 }
-                else if (! armed && envelope < rearmLevel)
+                else
                 {
-                    armed = true;
+                    hitPeak = std::max (hitPeak, envelope);
+
+                    // Re-arm once this hit has died down a little - the next kick can arrive while its tail is still
+                    // above the threshold, and is then recognised by its jump in level.
+                    if (envelope < hitPeak * dropFactor || envelope < rearmLevel)
+                    {
+                        armed = true;
+                        armFloor = envelope;
+                    }
                 }
                 break;
             }

@@ -61,10 +61,19 @@ public:
     // Gain smoothing (prevents clicks when a curve starts or the depth jumps).
     static constexpr float kAttackMs = 0.8f;    // gain falling
     static constexpr float kReleaseMs = 2.0f;   // gain rising
-    // Audio trigger detector.
-    static constexpr float kDetectorReleaseMs = 35.0f;   // peak envelope decay
-    static constexpr float kRearmHysteresisDb = 6.0f;    // the envelope must fall this far below the threshold to re-arm
-    static constexpr float kMinRetriggerMs = 40.0f;      // never two audio triggers closer than this
+    // Audio trigger detector: an onset detector, so kicks in quick succession are all caught even while the previous
+    // kick's tail is still above the threshold.
+    //   Envelope: peak follower that holds each peak for kDetectorHoldMs (longer than half a period of a 40 Hz kick
+    //   body, so the envelope does not ripple) and then falls with kDetectorReleaseMs.
+    //   Trigger:  armed, envelope >= threshold, envelope >= the lowest level since arming + kRetriggerRiseDb, and at
+    //             least kMinRetriggerMs since the last trigger.
+    //   Re-arm:   the envelope has fallen kRearmDropDb below the hit's peak, or kRearmHysteresisDb below the threshold.
+    static constexpr float kDetectorHoldMs = 15.0f;
+    static constexpr float kDetectorReleaseMs = 30.0f;
+    static constexpr float kRetriggerRiseDb = 5.0f;
+    static constexpr float kRearmDropDb = 5.0f;
+    static constexpr float kRearmHysteresisDb = 6.0f;
+    static constexpr float kMinRetriggerMs = 40.0f;
     static constexpr float kFloorDb = -100.0f;
 
     void prepare (double sampleRate) noexcept;
@@ -90,13 +99,17 @@ private:
     double sampleRate = 44100.0;
     float attackCoef = 1.0f, releaseCoef = 1.0f, detectorCoef = 0.0f;
     int minRetriggerSamples = 1;
+    int detectorHoldSamples = 1;
 
     float gain = 1.0f;
     double cyclePhase = 2.0;     // triggered modes: >= 1 means idle
     double freeRunPpq = 0.0;     // Tempo mode clock without a host position
     double lastTempoPhase = -1.0;
     float envelope = 0.0f;
+    int holdCounter = 0;
     bool armed = true;
+    float armFloor = 0.0f;   // lowest envelope since the detector re-armed
+    float hitPeak = 0.0f;    // highest envelope since the last trigger
     int samplesSinceTrigger = 1 << 30;
     TriggerMode lastMode = TriggerMode::Tempo;
     float displayPhase = -1.0f;

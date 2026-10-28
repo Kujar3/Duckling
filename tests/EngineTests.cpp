@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <vector>
 
 using namespace dk;
@@ -182,6 +183,121 @@ TEST_CASE ("audio mode triggers once per hit and re-arms after it decays")
     CHECK (gains[13000 + 100] < 0.2f);
     CHECK (gains[900] > 0.999f);
     CHECK (minIn (gains, 28000, 31000) > 0.99f);   // the hat does not trigger
+}
+
+namespace
+{
+// A kick: a falling 120 -> 50 Hz sweep with a decaying tail (tau = tailMs), peak `amp`.
+void addKick (std::vector<float>& sc, int at, float amp, float tailMs)
+{
+    double phase = 0.0;
+
+    for (int i = 0; at + i < (int) sc.size() && i < 48000; ++i)
+    {
+        const float t = (float) i / 48000.0f;
+        const float hz = 50.0f + 70.0f * std::exp (-t / 0.03f);
+        phase += 2.0 * 3.14159265358979 * hz / 48000.0;
+        sc[(size_t) (at + i)] += amp * std::exp (-t * 1000.0f / tailMs) * (float) std::sin (phase);
+    }
+}
+
+int countDucks (const std::vector<float>& gains, const std::vector<int>& kicks, int& missedAt)
+{
+    int ducked = 0;
+    missedAt = -1;
+
+    for (int k : kicks)
+    {
+        if (gains[(size_t) (k + 240)] < 0.2f)   // 5 ms after the kick
+            ++ducked;
+        else if (missedAt < 0)
+            missedAt = k;
+    }
+
+    return ducked;
+}
+} // namespace
+
+TEST_CASE ("audio mode: uneven kick patterns (1/4 1/4 1/4 1/8 1/8) never miss a kick")
+{
+    // At 128 BPM, kicks on beats 0 1 2 3 3.5 | 4 5 6 7 7.5 | 8, each with a long-ish tail, default threshold.
+    const double beat = 60.0 / 128.0 * 48000.0;
+    const double beats[] = { 0, 1, 2, 3, 3.5, 4, 5, 6, 7, 7.5, 8 };
+
+    for (const float tailMs : { 40.0f, 90.0f, 150.0f })
+    {
+        for (const float thresholdDb : { -24.0f, -12.0f })
+        {
+            std::vector<int> kicks;
+            std::vector<float> sc ((size_t) (beat * 9.0), 0.0f);
+
+            for (double b : beats)
+            {
+                kicks.push_back (2000 + (int) std::lround (b * beat));
+                addKick (sc, kicks.back(), 0.9f, tailMs);
+            }
+
+            DuckSettings s;
+            s.mode = TriggerMode::Audio;
+            s.thresholdDb = thresholdDb;
+            s.rateBeats = 0.5;
+            s.curve = CurveShape::Punchy;
+            TransportInfo t { true, true, 0.0, 128.0 };
+            DuckEngine e;
+            e.prepare (kRate);
+            std::vector<float> gains (sc.size());
+
+            for (size_t start = 0; start < sc.size(); start += 256)
+            {
+                const int n = (int) std::min<size_t> (256, sc.size() - start);
+                e.process (s, t, sc.data() + start, nullptr, 0, gains.data() + start, n);
+            }
+
+            int missedAt = -1;
+            const int ducked = countDucks (gains, kicks, missedAt);
+
+            if (ducked != (int) kicks.size())
+                std::cout << "    tail " << tailMs << " ms, threshold " << thresholdDb << " dB: " << ducked << "/"
+                          << kicks.size() << " ducked, first miss at beat " << ((double) missedAt - 2000.0) / beat << "\n";
+
+            CHECK_EQ (ducked, (int) kicks.size());
+            CHECK_EQ (e.getTriggerCount(), (uint32_t) kicks.size());
+        }
+    }
+}
+
+TEST_CASE ("audio mode: kick rolls (1/16 and 1/8T) trigger once per kick, never twice")
+{
+    for (const double spacingBeats : { 0.25, 1.0 / 3.0 })
+    {
+        for (const double bpm : { 128.0, 150.0 })
+        {
+            const double beat = 60.0 / bpm * 48000.0;
+            std::vector<int> kicks;
+            std::vector<float> sc ((size_t) (beat * 5.0), 0.0f);
+
+            for (double b = 0.0; b < 4.0 - 1.0e-9; b += spacingBeats)
+            {
+                kicks.push_back (2000 + (int) std::lround (b * beat));
+                addKick (sc, kicks.back(), 0.9f, 60.0f);
+            }
+
+            DuckSettings s;
+            s.mode = TriggerMode::Audio;
+            s.thresholdDb = -24.0f;
+            s.rateBeats = 0.25;
+            s.curve = CurveShape::Classic;   // still deep 5 ms after the kick at 1/16
+            TransportInfo t { true, true, 0.0, bpm };
+            DuckEngine e;
+            e.prepare (kRate);
+            std::vector<float> gains (sc.size());
+            e.process (s, t, sc.data(), nullptr, 0, gains.data(), (int) sc.size());
+
+            int missedAt = -1;
+            CHECK_EQ (countDucks (gains, kicks, missedAt), (int) kicks.size());
+            CHECK_EQ (e.getTriggerCount(), (uint32_t) kicks.size());
+        }
+    }
 }
 
 TEST_CASE ("audio mode: a sustained signal above the threshold triggers only once")

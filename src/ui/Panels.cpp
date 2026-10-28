@@ -392,6 +392,13 @@ ThresholdMeter::ThresholdMeter (juce::RangedAudioParameter& p)
     attachment.sendInitialUpdate();
 }
 
+ThresholdMeter::~ThresholdMeter()
+{
+    // The editor can close mid-drag: never leave the host with an open automation gesture.
+    if (dragging)
+        attachment.endGesture();
+}
+
 void ThresholdMeter::setLevel (float newLevelDb, bool flash)
 {
     flash = flash || flashAmount > 0.01f;

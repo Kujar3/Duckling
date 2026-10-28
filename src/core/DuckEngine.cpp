@@ -222,7 +222,7 @@ void DuckEngine::process (const DuckSettings& settings, const TransportInfo& tra
     }
 
     if (! transport.hasPosition)
-        freeRunPpq = std::fmod (freeRunPpq + (double) numSamples * beatsPerSample, 12288.0);   // a multiple of every rate
+        freeRunPpq = std::fmod (freeRunPpq + (double) numSamples * beatsPerSample, rateBeats * 4096.0);   // whole cycles
 
     displayPhase = lastPhase;
 }

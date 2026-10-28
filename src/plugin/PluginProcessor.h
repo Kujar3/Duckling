@@ -91,7 +91,8 @@ public:
 
 private:
     static constexpr int kChunk = 256;        // internal processing block (fixed-size scratch, no allocation)
-    static constexpr int kMaxMidiPerChunk = 128;
+    static constexpr int kMaxMidiPerChunk = kChunk;   // one trigger per sample at most
+    static constexpr int kMaxMainChannels = 2;
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -106,6 +107,8 @@ private:
     DuckEngine engine;
     juce::dsp::LinkwitzRileyFilter<float> crossover;
     float currentCrossoverHz = -1.0f;
+    std::array<float, (size_t) DuckBand::NumBands> bandWeights { 1.0f, 0.0f, 0.0f };   // Full / Lows / Highs mix
+    float bandFadeCoef = 0.002f;
     double currentSampleRate = 44100.0;
 
     std::array<float, kChunk> detector {};

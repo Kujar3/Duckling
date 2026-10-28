@@ -252,6 +252,7 @@ void testBands()
         auto outLow = h.run (beat, low);
         Harness h2;
         h2.set (dk::ParamIDs::band, (float) dk::DuckBand::Lows);
+        h2.proc.prepareToPlay (kRate, 512);   // start in Lows (no band crossfade inside the measurement)
         h2.head.time = h2.inputIndex = beat * 2;
         auto outHigh = h2.run (beat, high);
 
@@ -267,6 +268,7 @@ void testBands()
     {
         Harness h;
         h.set (dk::ParamIDs::band, (float) dk::DuckBand::Highs);
+        h.proc.prepareToPlay (kRate, 512);
         h.head.time = h.inputIndex = beat * 2;
         auto outHigh = h.run (beat, high);
         auto shifted = [beat, high] (long long i) { return high (i + beat * 2); };
@@ -452,6 +454,47 @@ void testRobustness()
     Harness h3;
     auto single = h3.run (2000, [] (long long i) { return sine (i, 220.0f); }, nullptr, {}, 1);
     check (single.size() == 2000, "1-sample blocks work");
+
+    // One NaN on the main input in Lows mode: only that sample is lost, the rest of the block stays clean.
+    Harness h4;
+    h4.set (dk::ParamIDs::band, (float) dk::DuckBand::Lows);
+    h4.proc.prepareToPlay (kRate, 512);
+    auto bad = h4.run (4096, [] (long long i) { return i == 100 ? std::numeric_limits<float>::quiet_NaN() : sine (i, 220.0f); });
+    bool finite3 = true;
+    for (float v : bad)
+        finite3 &= std::isfinite (v);
+    check (finite3, "a NaN on the main input does not ring through the crossover");
+
+    // Switching Full -> Lows -> Highs while a tone at the crossover plays: crossfaded, no jump.
+    Harness h5;
+    h5.set (dk::ParamIDs::depth, 0.0f);
+    auto xo = [] (long long i) { return sine (i, 150.0f, 0.8f); };
+    auto a = h5.run (9600, xo);
+    h5.set (dk::ParamIDs::band, (float) dk::DuckBand::Lows);
+    auto b = h5.run (9600, xo);
+    h5.set (dk::ParamIDs::band, (float) dk::DuckBand::Highs);
+    auto c = h5.run (9600, xo);
+    std::vector<float> all (a);
+    all.insert (all.end(), b.begin(), b.end());
+    all.insert (all.end(), c.begin(), c.end());
+    float maxStep = 0.0f;
+    for (size_t i = 1; i < all.size(); ++i)
+        maxStep = juce::jmax (maxStep, std::abs (all[i] - all[i - 1]));
+    // A 150 Hz sine at 0.8 moves at most 0.8 * 2 pi * 150 / 48000 = 0.0157 per sample.
+    check (maxStep < 0.02f, "band switches are click-free", str ("max step ", maxStep));
+
+    // A flood of simultaneous notes still lets a later note in the same chunk retrigger.
+    Harness h6;
+    h6.set (dk::ParamIDs::trigger, (float) dk::TriggerMode::Midi);
+    h6.set (dk::ParamIDs::rate, (float) dk::RateDivision::Sixteenth);
+    std::vector<int> notes (300, 0);
+    notes.push_back (200);
+    notes.push_back (24000);
+    auto tone = [] (long long i) { return sine (i, 300.0f); };
+    auto flood = h6.run (24400, tone, nullptr, notes);
+    check (ratio (flood, tone, 24000 + 150, 24000 + 300) < 0.1f, "300 notes at once, then a later note: still ducks");
+    check (h6.proc.getDisplayState().midiNoteCount == 302, "every note-on counted",
+           str (h6.proc.getDisplayState().midiNoteCount));
 }
 
 void testAllocations()
@@ -477,7 +520,9 @@ void testAllocations()
     juce::AudioBuffer<float> buffer (4, 512);
     buffer.clear();
     juce::MidiBuffer midi;
-    midi.ensureSize (1024);
+    midi.ensureSize (8192);
+    std::vector<juce::uint8> sysexBytes (300, 0x11);
+    const auto sysex = juce::MidiMessage::createSysExMessage (sysexBytes.data(), (int) sysexBytes.size());
     midi.addEvent (juce::MidiMessage::noteOn (1, 36, (juce::uint8) 100), 10);
     midi.clear();
     const auto start = dkdev::getAllocationCounts();
@@ -488,6 +533,7 @@ void testAllocations()
             buffer.setSample (2, s, (s + i * 512) % 9600 < 200 ? 0.8f : 0.0f);
 
         midi.addEvent (juce::MidiMessage::noteOn (1, 36, (juce::uint8) 100), i % 512);
+        midi.addEvent (sysex, (i * 7) % 512);   // a long SysEx must not allocate while it is skipped
         dkdev::setAllocationTracking (true);
         h.proc.processBlock (buffer, midi);
         dkdev::setAllocationTracking (false);

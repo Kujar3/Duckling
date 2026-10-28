@@ -78,6 +78,7 @@ class ThresholdMeter final : public juce::Component, public juce::SettableToolti
 {
 public:
     explicit ThresholdMeter (juce::RangedAudioParameter& thresholdParameter);
+    ~ThresholdMeter() override;
 
     void setLevel (float levelDb, bool flash);
 

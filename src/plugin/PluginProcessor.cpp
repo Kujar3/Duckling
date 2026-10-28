@@ -116,11 +116,16 @@ void DucklingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = currentSampleRate;
     spec.maximumBlockSize = (juce::uint32) juce::jmax (1, juce::jmin (samplesPerBlock, kChunk));
-    spec.numChannels = (juce::uint32) juce::jmax (1, getMainBusNumInputChannels());
+    spec.numChannels = (juce::uint32) kMaxMainChannels;   // always both: a later mono -> stereo switch stays in range
     crossover.prepare (spec);
     currentCrossoverHz = juce::jlimit (20.0f, (float) (currentSampleRate * 0.45), crossoverParam->load());
     crossover.setCutoffFrequency (currentCrossoverHz);
     crossover.reset();
+
+    bandFadeCoef = (float) (1.0 - std::exp (-1.0 / (currentSampleRate * 0.010)));   // ~10 ms band crossfade
+    const auto band = choiceIndex (bandParam, (int) DuckBand::NumBands);
+    for (int b = 0; b < (int) DuckBand::NumBands; ++b)
+        bandWeights[(size_t) b] = b == band ? 1.0f : 0.0f;
 
     samplesSinceSidechainSignal = 1 << 30;
 }
@@ -156,7 +161,7 @@ void DucklingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     const int numSamples = buffer.getNumSamples();
     auto mainBuffer = getBusBuffer (buffer, false, 0);
-    const int mainChannels = juce::jmin (mainBuffer.getNumChannels(), getMainBusNumInputChannels());
+    const int mainChannels = juce::jmin (mainBuffer.getNumChannels(), getMainBusNumInputChannels(), kMaxMainChannels);
 
     for (int ch = mainChannels; ch < mainBuffer.getNumChannels(); ++ch)
         mainBuffer.clear (ch, 0, numSamples);
@@ -258,12 +263,19 @@ void DucklingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
             if (metadata.samplePosition >= start + n)
                 break;
 
-            if (metadata.getMessage().isNoteOn())
+            // Note-on with a non-zero velocity, read from the raw bytes (building a juce::MidiMessage could allocate
+            // for long SysEx messages).
+            const bool noteOn = metadata.numBytes >= 3 && metadata.data != nullptr
+                                && (metadata.data[0] & 0xf0) == 0x90 && metadata.data[2] != 0;
+
+            if (noteOn)
             {
                 midiNotes.fetch_add (1, std::memory_order_relaxed);
+                const int offset = juce::jlimit (0, n - 1, metadata.samplePosition - start);
 
-                if (numMidi < kMaxMidiPerChunk)
-                    midiOffsets[(size_t) numMidi++] = juce::jlimit (0, n - 1, metadata.samplePosition - start);
+                // Several notes on the same sample are one trigger, so there is at most one entry per sample.
+                if (numMidi == 0 || midiOffsets[(size_t) (numMidi - 1)] != offset)
+                    midiOffsets[(size_t) numMidi++] = offset;
             }
         }
 
@@ -275,30 +287,47 @@ void DucklingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         engine.process (settings, chunkTransport, sidechainChannels > 0 ? detector.data() : nullptr,
                         midiOffsets.data(), numMidi, gains.data(), n);
 
-        // Apply
+        // Apply. The three band modes are crossfaded (~10 ms) so switching Full / Lows / Highs never clicks: the
+        // split path is all-pass, so a hard switch from the dry path would jump in phase.
+        std::array<float*, kMaxMainChannels> channelData {};
+
         for (int ch = 0; ch < mainChannels; ++ch)
+            channelData[(size_t) ch] = mainBuffer.getWritePointer (ch, start);
+
+        for (int i = 0; i < n; ++i)
         {
-            float* data = mainBuffer.getWritePointer (ch, start);
-
-            if (band == DuckBand::Full)
+            for (int b = 0; b < (int) DuckBand::NumBands; ++b)
             {
-                for (int i = 0; i < n; ++i)
-                {
-                    float low = 0.0f, high = 0.0f;
-                    crossover.processSample (ch, data[i], low, high);   // keeps the filter warm for a band switch
-                    data[i] *= gains[(size_t) i];
-                }
+                const float target = b == (int) band ? 1.0f : 0.0f;
+                auto& w = bandWeights[(size_t) b];
+                w += (target - w) * bandFadeCoef;
+
+                if (std::abs (target - w) < 1.0e-4f)
+                    w = target;
             }
-            else
-            {
-                const bool duckLows = band == DuckBand::Lows;
 
-                for (int i = 0; i < n; ++i)
-                {
-                    float low = 0.0f, high = 0.0f;
-                    crossover.processSample (ch, data[i], low, high);
-                    data[i] = duckLows ? low * gains[(size_t) i] + high : low + high * gains[(size_t) i];
-                }
+            const float g = gains[(size_t) i];
+            const float wFull = bandWeights[0], wLows = bandWeights[1], wHighs = bandWeights[2];
+
+            for (int ch = 0; ch < mainChannels; ++ch)
+            {
+                float x = channelData[(size_t) ch][i];
+
+                if (! std::isfinite (x))
+                    x = 0.0f;   // never let one bad sample ring through the crossover
+
+                float low = 0.0f, high = 0.0f;
+                crossover.processSample (ch, x, low, high);   // always running, so a band switch starts warm
+
+                float y = wFull * x * g;
+
+                if (wLows > 0.0f)
+                    y += wLows * (low * g + high);
+
+                if (wHighs > 0.0f)
+                    y += wHighs * (low + high * g);
+
+                channelData[(size_t) ch][i] = y;
             }
         }
     }
